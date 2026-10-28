@@ -94,8 +94,8 @@ public class PushLinearTests : IDisposable
         Assert.Equal(gitFiles, svnFiles);
         foreach (var f in gitFiles)
         {
-            var git = await File.ReadAllBytesAsync(SvnTestRepo.LongPath(Path.Combine(dest, f.Replace('/', '\\'))));
-            var svn = await File.ReadAllBytesAsync(SvnTestRepo.LongPath(Path.Combine(export, f.Replace('/', '\\'))));
+            var git = await File.ReadAllBytesAsync(SvnTestRepo.LongPath(Path.Combine(dest, f.Replace('/', Path.DirectorySeparatorChar))));
+            var svn = await File.ReadAllBytesAsync(SvnTestRepo.LongPath(Path.Combine(export, f.Replace('/', Path.DirectorySeparatorChar))));
             Assert.True(git.SequenceEqual(svn), f);
         }
         Assert.False(Directory.Exists(Path.Combine(export, "velho")));
