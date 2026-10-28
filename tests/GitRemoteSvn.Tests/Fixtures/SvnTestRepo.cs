@@ -15,7 +15,8 @@ public sealed class SvnTestRepo : IAsyncDisposable
     {
         RootPath = root;
         RepoPath = Path.Combine(root, "repo");
-        RepoUrl = "file:///" + RepoPath.Replace('\\', '/');
+        // no Linux o caminho ja comeca com '/': file:///tmp/..., nao file:////tmp/...
+        RepoUrl = "file://" + (RepoPath.StartsWith('/') ? "" : "/") + RepoPath.Replace('\\', '/');
         WcPath = Path.Combine(root, "wc");
     }
 
