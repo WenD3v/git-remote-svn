@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
+      - name: Install Subversion (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y subversion
+
+      - name: Install Subversion (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install sliksvn -y --no-progress
+          "C:\Program Files\SlikSvn\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: Tool versions
+        run: |
+          git --version
+          svn --version --quiet
+          svnrdump --version --quiet
+
+      - name: Test
+        run: dotnet test --logger "console;verbosity=normal"
