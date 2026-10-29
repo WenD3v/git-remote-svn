@@ -214,10 +214,13 @@ public class ReviewFixesTests : IDisposable
             cmd.CommandText = "INSERT INTO WC_LOCK (wc_id, local_dir_relpath, locked_levels) VALUES (1, '', -1)";
             cmd.ExecuteNonQuery();
         }
+        // queda no meio de um commit/add deixa o marcador ao lado da WC
+        await File.WriteAllTextAsync(path + ".busy", "");
 
         var again = await wc.EnsureAsync(repo.RepoUrl + "/trunk", head);
 
         Assert.Equal(path, again);
+        Assert.False(File.Exists(path + ".busy"));
     }
 
     [Fact]

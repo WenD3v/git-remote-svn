@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Globalization;
 using System.Text;
 using GitRemoteSvn.Git;
 using GitRemoteSvn.Svn;
@@ -67,10 +69,12 @@ public class Pusher(SvnClient svn, GitClient git, SvnWorkingCopy wc, StateStore 
             return new PushResult(commits.Length, 0, warnings) { RemoteHead = remoteSha };
         }
 
-        var uuid = (await svn.InfoAsync(branchUrl)).Uuid;
+        var clock = Stopwatch.StartNew();
+        var info = await svn.InfoAsync(branchUrl);
+        var uuid = info.Uuid;
         long lastRev;
         if (remoteSha is null)
-            lastRev = await svn.LastChangedRevAsync(branchUrl);
+            lastRev = info.LastChangedRev;
         else
         {
             // o svn-id da ref e o que o Git de fato tem; o estado pode estar adiantado por revisoes sem alteracao
@@ -84,11 +88,15 @@ public class Pusher(SvnClient svn, GitClient git, SvnWorkingCopy wc, StateStore 
         // queda - registradas no estado logo apos cada svn commit e conferidas, em ordem, pela mensagem.
         var pushed = state.GetPushedRevs(remoteRef);
         var pending = new Queue<SvnRevision>();
-        if (await svn.LastChangedRevAsync(branchUrl) is var head && head > lastRev)
-            foreach (var r in await svn.LogAsync(branchUrl, lastRev + 1, head, stopOnCopy: false)) pending.Enqueue(r);
+        if (info.LastChangedRev > lastRev)
+            foreach (var r in await svn.LogAsync(branchUrl, lastRev + 1, info.LastChangedRev, stopOnCopy: false)) pending.Enqueue(r);
         const string Stale = "o SVN recebeu revisoes novas desde o ultimo fetch; rode git pull e repita o push";
         var path = await wc.EnsureAsync(branchUrl, lastRev);
+        Log?.Write($"push {localRef}: {commits.Length} commit(s) sobre r{lastRev}; wc pronta em {clock.ElapsedMilliseconds} ms");
         await wc.RevertAsync(path);
+        // arquivos que ja estao no SVN nesta revisao: base para saber o que baixar, apagar ou adicionar
+        var repoFiles = new HashSet<string>(await svn.ListFilesAsync(At(branchUrl, lastRev)), StringComparer.Ordinal);
+        Log?.Write($"wc limpa e arvore listada ({repoFiles.Count} arquivos) em {clock.ElapsedMilliseconds} ms");
 
         var mirror = remoteSha;
         int created = 0, empty = 0, adopted = 0;
@@ -116,10 +124,15 @@ public class Pusher(SvnClient svn, GitClient git, SvnWorkingCopy wc, StateStore 
                     lastRev = r.Revision;
                     adopted++;
                     Log?.Write($"r{r.Revision} ja estava no SVN (push anterior interrompido) <- {c[..7]} {FirstLine(message)}");
-                    await wc.EnsureAsync(branchUrl, lastRev);
+                    // a revisao adotada ja tem o conteudo deste commit no SVN: o snapshot passa a refletir isso
+                    foreach (var change in changes)
+                        if (change.Content is null) repoFiles.Remove(change.Path);
+                        else repoFiles.Add(change.Path);
+                    lastRev = r.Revision;
+                    adopted++;
                     continue;
                 }
-                await wc.ApplyTreeAsync(path, changes);
+                await wc.ApplyTreeAsync(path, branchUrl, lastRev, changes, repoFiles);
                 if (merge is not null)
                     await wc.SetMergeInfoAsync(path, AddMergeInfo(await svn.PropGetAsync("svn:mergeinfo", path), merge));
                 long rev;
@@ -152,8 +165,8 @@ public class Pusher(SvnClient svn, GitClient git, SvnWorkingCopy wc, StateStore 
                 lastRev = rev;
                 created++;
                 if (AfterEachRevision is not null) await AfterEachRevision(created);
-                // deixa a WC inteira na revisao recem-criada (evita "out of date" em pastas no proximo commit)
-                await wc.EnsureAsync(branchUrl, rev);
+                // avanca so a revisao das pastas tocadas (sem baixar conteudo) para o proximo commit
+                await wc.RefreshAsync(path, rev, changes);
             }
             if (pending.Count > 0) throw new PushRejectedException(Stale);
         }
@@ -167,6 +180,7 @@ public class Pusher(SvnClient svn, GitClient git, SvnWorkingCopy wc, StateStore 
         await git.RunAsync("update-ref", remoteRef, mirror!);
         state.SetLastRev(remoteRef, lastRev);
         state.ClearPushedRevs(remoteRef);
+        Log?.Write($"push concluido em {clock.ElapsedMilliseconds} ms: {created} revisao(oes) criada(s), {adopted} adotada(s), {empty} vazia(s)");
         if (adopted > 0)
             warnings.Add($"{adopted} revisao(oes) de um push interrompido reconhecida(s); nada foi reenviado");
 
@@ -242,6 +256,10 @@ public class Pusher(SvnClient svn, GitClient git, SvnWorkingCopy wc, StateStore 
         var parts = privateRef.Split('/');
         return string.Join('/', parts.Take(3)) + "/";
     }
+
+    /// <summary>URL da revisao (a URL ja pode vir com peg de outro ponto do fluxo).</summary>
+    static string At(string url, long rev) =>
+        url.LastIndexOf('@') > url.LastIndexOf('/') ? url : $"{url}@{rev.ToString(CultureInfo.InvariantCulture)}";
 
     // E155011 arquivo desatualizado, E160028/E160024 conflito no servidor, E170004 item desatualizado
     static bool IsOutOfDate(string message) =>

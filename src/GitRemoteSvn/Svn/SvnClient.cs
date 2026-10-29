@@ -67,7 +67,7 @@ public class SvnClient(string svnExe = "svn")
 
     // so leitura ou operacoes idempotentes: repetir commit/copy apos queda poderia duplicar uma revisao ja aceita
     static readonly HashSet<string> SafeToRetry = new(StringComparer.Ordinal)
-        { "info", "list", "log", "cat", "propget", "export", "checkout", "update" };
+        { "info", "list", "log", "cat", "propget", "export", "checkout", "update", "cleanup", "revert" };
 
     /// <summary>Repete a chamada quando a falha e de rede (instavel em clones longos); erros reais saem na hora.</summary>
     async Task<(int Code, T StdOut, string StdErr)> WithRetryAsync<T>(Func<Task<(int Code, T StdOut, string StdErr)>> run)
@@ -95,15 +95,46 @@ public class SvnClient(string svnExe = "svn")
             entry.Element("url")!.Value.Trim(),
             repo.Element("root")!.Value.Trim(),
             repo.Element("uuid")!.Value.Trim(),
-            (long)entry.Attribute("revision")!);
+            (long)entry.Attribute("revision")!,
+            (long?)entry.Element("commit")?.Attribute("revision") ?? (long)entry.Attribute("revision")!);
     }
 
     /// <summary>Ultima revisao que alterou algo sob a URL.</summary>
-    public async Task<long> LastChangedRevAsync(string url)
+    public async Task<long> LastChangedRevAsync(string url) => (await InfoAsync(url)).LastChangedRev;
+
+    /// <summary>
+    /// Arquivos versionados sob <paramref name="url"/> (caminho relativo com '/'), numa unica chamada:
+    /// evita um <c>svn cat</c>/<c>svn info</c> por arquivo ao montar o working copy de um push.
+    /// </summary>
+    public async Task<IReadOnlyList<string>> ListFilesAsync(string url)
     {
-        var doc = await XmlAsync(new[] { "info", "--xml", url });
-        return (long)doc.Root!.Element("entry")!.Element("commit")!.Attribute("revision")!;
+        var doc = await XmlAsync(new[] { "list", "-R", "--xml", url });
+        var root = Uri.UnescapeDataString(StripPeg(url).TrimEnd('/'));
+        var result = new List<string>();
+        foreach (var list in doc.Root!.Elements("list"))
+        {
+            var at = (string?)list.Attribute("path");
+            var prefix = at is null ? "" : RelativeTo(root, Uri.UnescapeDataString(at));
+            foreach (var entry in list.Elements("entry"))
+            {
+                if ((string?)entry.Attribute("kind") == "dir") continue;
+                var name = entry.Element("name")!.Value;
+                result.Add(prefix.Length == 0 ? name : prefix + "/" + name);
+            }
+        }
+        return result;
     }
+
+    static string StripPeg(string url)
+    {
+        var at = url.LastIndexOf('@');
+        return at > url.LastIndexOf('/') && url[(at + 1)..].All(char.IsDigit) ? url[..at] : url;
+    }
+
+    static string RelativeTo(string root, string path) =>
+        path.Length > root.Length && path.StartsWith(root, StringComparison.Ordinal)
+            ? path[root.Length..].Trim('/')
+            : "";
 
     public async Task<IReadOnlyList<SvnEntry>> ListAsync(string url)
     {

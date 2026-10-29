@@ -69,6 +69,19 @@ public class StateStore
 
     public ProjectLayout? LoadLayout() => _data.Layout;
 
+    /// <summary>
+    /// Revisao do repositorio SVN na ultima importacao completa: com o mesmo valor (mesmo uuid, mesma HEAD) uma
+    /// nova sessao nao precisa consultar branch por branch para concluir que nada mudou.
+    /// </summary>
+    public (string Uuid, long Revision)? GetImportedHead() =>
+        _data.ImportedHead is { } h ? (h.Uuid, h.Revision) : null;
+
+    public void SetImportedHead(string uuid, long revision)
+    {
+        _data.ImportedHead = new ImportedHead { Uuid = uuid, Revision = revision };
+        Save();
+    }
+
     void Save()
     {
         var tmp = _file + ".tmp";
@@ -81,5 +94,12 @@ public class StateStore
         public Dictionary<string, long> LastRevs { get; set; } = new();
         public Dictionary<string, List<long>> Pushed { get; set; } = new();
         public ProjectLayout? Layout { get; set; }
+        public ImportedHead? ImportedHead { get; set; }
+    }
+
+    class ImportedHead
+    {
+        public string Uuid { get; set; } = "";
+        public long Revision { get; set; }
     }
 }

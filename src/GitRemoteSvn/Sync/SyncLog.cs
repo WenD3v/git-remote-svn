@@ -14,7 +14,7 @@ public class SyncLog(string gitDir)
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
-            File.AppendAllText(_path, $"{DateTime.Now:HH:mm:ss} {line}\n", new UTF8Encoding(false));
+            File.AppendAllText(_path, $"{DateTime.Now:HH:mm:ss.fff} {line}\n", new UTF8Encoding(false));
         }
         catch (IOException)
         {

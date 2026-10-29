@@ -7,6 +7,8 @@ public record SvnPathChange(char Action, string Path, string? CopyFromPath, long
 public record SvnRevision(long Revision, string Author, DateTimeOffset Date, string Message,
     IReadOnlyList<SvnPathChange> Paths);
 
-public record SvnInfo(string Url, string RepoRootUrl, string Uuid, long Revision);
+/// <param name="Revision">Revisao da URL consultada (normalmente HEAD).</param>
+/// <param name="LastChangedRev">Ultima revisao que alterou esse caminho.</param>
+public record SvnInfo(string Url, string RepoRootUrl, string Uuid, long Revision, long LastChangedRev);
 
 public class SvnException(string message) : Exception(message);
