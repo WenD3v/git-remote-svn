@@ -1,9 +1,13 @@
+using GitRemoteSvn.Tests.Fixtures;
 using GitRemoteSvn.Update;
+using System.Diagnostics;
 using System.Formats.Tar;
 using System.IO.Compression;
 using System.Net;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Xunit;
 
 namespace GitRemoteSvn.Tests;
@@ -336,6 +340,190 @@ public class UpdateTests
             Assert.Equal("novo", File.ReadAllText(exe));
         }
         finally { Directory.Delete(dir, true); }
+    }
+
+    // --- Task 6: comandos e checagem ao final da sessao ---
+
+    [Fact]
+    public async Task Update_em_instalacao_de_desenvolvimento_recusa()
+    {
+        var http = new HttpClient(new FakeHandler(_ => new HttpResponseMessage(HttpStatusCode.NotFound)));
+        var svc = new UpdateService(UpdateOptions.FromEnvironment(_ => null), http,
+            OperatingSystem.IsWindows() ? "dotnet.exe" : "dotnet");
+        var rel = new ReleaseInfo("v9.9.9", "9.9.9", new[] { new ReleaseAsset("SHA256SUMS", "https://x/s") });
+        var r = await svc.UpdateAsync(rel);
+        Assert.False(r.Updated);
+        Assert.Contains("desenvolvimento", r.Message);
+    }
+
+    static string AssetDaPlataforma(string versao) =>
+        $"git-remote-svn-v{versao}-{(OperatingSystem.IsWindows() ? "win" : OperatingSystem.IsMacOS() ? "osx" : "linux")}-" +
+        $"{(RuntimeInformation.ProcessArchitecture == Architecture.X64 ? "x64" : "arm64")}" +
+        (OperatingSystem.IsWindows() ? ".zip" : ".tar.gz");
+
+    static byte[] PacoteDaPlataforma(string texto) =>
+        OperatingSystem.IsWindows() ? ZipCom("git-remote-svn.exe", texto) : TarGzCom("git-remote-svn", texto);
+
+    /// <summary>Servidor falso: `releases/latest` devolve <paramref name="rel"/> e as URLs extras vem de <paramref name="extras"/>.</summary>
+    static HttpClient HttpDoRelease(ReleaseInfo rel, Dictionary<string, byte[]>? extras = null)
+    {
+        var json = JsonSerializer.Serialize(new
+        {
+            tag_name = rel.Tag,
+            prerelease = false,
+            assets = rel.Assets.Select(a => new { name = a.Name, browser_download_url = a.DownloadUrl }),
+        });
+        extras ??= new();
+        return new HttpClient(new FakeHandler(r =>
+        {
+            var url = r.RequestUri!.ToString();
+            if (url.EndsWith("/releases/latest", StringComparison.Ordinal))
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json) };
+            if (extras.TryGetValue(url, out var bytes))
+                return new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(bytes) };
+            return new HttpResponseMessage(HttpStatusCode.NotFound);
+        }));
+    }
+
+    static (string Dir, string Exe, UpdateCache Cache) CenarioNotice()
+    {
+        var dir = Directory.CreateTempSubdirectory("grs-notice-").FullName;
+        return (dir, Path.Combine(dir, OperatingSystem.IsWindows() ? "git-remote-svn.exe" : "git-remote-svn"),
+            new UpdateCache(Path.Combine(dir, "update.json")));
+    }
+
+    [Fact]
+    public async Task Notice_avisa_quando_ha_versao_nova()
+    {
+        var (dir, exe, cache) = CenarioNotice();
+        var rel = new ReleaseInfo("v99.0.0", "99.0.0",
+            new[] { new ReleaseAsset(AssetDaPlataforma("99.0.0"), "https://x/pacote") });
+        try
+        {
+            var msg = await UpdateNotice.CheckAndApplyAsync(UpdateOptions.FromEnvironment(_ => null),
+                HttpDoRelease(rel), exe, cache, () => Task.FromResult(false));
+            Assert.Contains("nova versao v99.0.0", msg);
+            Assert.Equal("99.0.0", cache.Read()!.LatestVersion);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
+    public async Task Notice_nao_consulta_quando_o_cache_esta_fresco()
+    {
+        var (dir, exe, cache) = CenarioNotice();
+        cache.Write(new UpdateCacheEntry(DateTimeOffset.UtcNow, null, null));
+        var http = new HttpClient(new FakeHandler(_ => throw new InvalidOperationException("nao devia consultar")));
+        try
+        {
+            var msg = await UpdateNotice.CheckAndApplyAsync(UpdateOptions.FromEnvironment(_ => null),
+                http, exe, cache, () => Task.FromResult(false));
+            Assert.Null(msg);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
+    public async Task Notice_grava_negativo_quando_esta_na_ultima_versao()
+    {
+        var (dir, exe, cache) = CenarioNotice();
+        var rel = new ReleaseInfo("v" + VersionUtil.Current, VersionUtil.Current, Array.Empty<ReleaseAsset>());
+        try
+        {
+            var msg = await UpdateNotice.CheckAndApplyAsync(UpdateOptions.FromEnvironment(_ => null),
+                HttpDoRelease(rel), exe, cache, () => Task.FromResult(false));
+            Assert.Null(msg);
+            var entry = cache.Read()!;
+            Assert.Null(entry.LatestVersion);
+            Assert.True(cache.IsFresh(entry, TimeSpan.FromHours(24)));
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
+    public async Task Notice_auto_atualiza_quando_ligado()
+    {
+        var (dir, exe, cache) = CenarioNotice();
+        var versao = "99.1.0";
+        var nome = AssetDaPlataforma(versao);
+        var pacote = PacoteDaPlataforma("novo");
+        var sums = Encoding.UTF8.GetBytes($"{Sha(pacote)}  {nome}\n");
+        var rel = new ReleaseInfo("v" + versao, versao, new[]
+        {
+            new ReleaseAsset(nome, "https://x/pacote"),
+            new ReleaseAsset("SHA256SUMS", "https://x/sums"),
+        });
+        File.WriteAllText(exe, "antigo");
+        try
+        {
+            var msg = await UpdateNotice.CheckAndApplyAsync(UpdateOptions.FromEnvironment(_ => null),
+                HttpDoRelease(rel, new() { ["https://x/pacote"] = pacote, ["https://x/sums"] = sums }),
+                exe, cache, () => Task.FromResult(true));
+            Assert.Contains($"atualizado para v{versao}", msg);
+            Assert.Equal("novo", File.ReadAllText(exe));
+            Assert.Equal(versao, cache.Read()!.LatestVersion);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
+    public async Task Version_imprime_versao_e_rid()
+    {
+        var (code, stdout, _) = await RunHelperAsync(null, "--version");
+        Assert.Equal(0, code);
+        Assert.StartsWith("git-remote-svn " + VersionUtil.Current, stdout);
+        Assert.Contains("(", stdout);
+    }
+
+    [Fact]
+    public async Task Update_check_sem_rede_nao_falha()
+    {
+        var (code, stdout, stderr) = await RunHelperAsync(
+            new() { ["GIT_REMOTE_SVN_UPDATE_API"] = "http://127.0.0.1:9" }, "update", "--check");
+        Assert.Equal(0, code);
+        Assert.Contains("nao foi possivel", stderr + stdout);
+    }
+
+    [Fact]
+    public async Task Update_usa_cache_e_nao_consulta_o_github_quando_fresco()
+    {
+        var cachePath = Path.Combine(Path.GetTempPath(), "grs-cli-cache-" + Guid.NewGuid().ToString("N") + ".json");
+        new UpdateCache(cachePath).Write(new UpdateCacheEntry(DateTimeOffset.UtcNow, "99.2.0", null));
+        try
+        {
+            var (code, stdout, stderr) = await RunHelperAsync(new()
+            {
+                ["GIT_REMOTE_SVN_UPDATE_API"] = "http://127.0.0.1:9",
+                ["GIT_REMOTE_SVN_UPDATE_CACHE"] = cachePath,
+            }, "update", "--check");
+            Assert.Equal(0, code);
+            Assert.Contains("99.2.0", stdout + stderr);
+        }
+        finally { File.Delete(cachePath); }
+    }
+
+    /// <summary>Roda o executavel publicado do helper (fora do git) com variaveis de ambiente extras.</summary>
+    static async Task<(int Code, string StdOut, string StdErr)> RunHelperAsync(
+        Dictionary<string, string?>? env, params string[] args)
+    {
+        var dir = await HelperBinary.GetDirAsync();
+        var exe = Path.Combine(dir, OperatingSystem.IsWindows() ? "git-remote-svn.exe" : "git-remote-svn");
+        var psi = new ProcessStartInfo(exe)
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
+        };
+        foreach (var a in args) psi.ArgumentList.Add(a);
+        if (env is not null)
+            foreach (var (k, v) in env) psi.Environment[k] = v;
+        using var p = Process.Start(psi)!;
+        var stdout = p.StandardOutput.ReadToEndAsync();
+        var stderr = p.StandardError.ReadToEndAsync();
+        await p.WaitForExitAsync();
+        return (p.ExitCode, await stdout, await stderr);
     }
 }
 

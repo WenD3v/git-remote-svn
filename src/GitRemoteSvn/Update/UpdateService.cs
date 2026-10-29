@@ -91,9 +91,9 @@ public sealed class UpdateService(UpdateOptions options, HttpClient http, string
     {
         try
         {
-            if (IsFrameworkLauncher())
+            if (IsFrameworkLauncher(exePath))
                 return new UpdateResult(false, null,
-                    "este helper esta rodando pelo 'dotnet'; instale o binario publicado para usar o update");
+                    "instalacao de desenvolvimento ('dotnet'): instale o binario publicado para usar o update");
 
             var (os, arch) = Platform();
             var asset = SelectAsset(release.Assets, os, arch);
@@ -154,12 +154,12 @@ public sealed class UpdateService(UpdateOptions options, HttpClient http, string
         return (os, arch);
     }
 
-    static bool IsFrameworkLauncher()
+    /// <summary>Instalacao de desenvolvimento: o executavel que seria trocado e o proprio 'dotnet'.</summary>
+    static bool IsFrameworkLauncher(string exePath)
     {
-        var file = Environment.ProcessPath is { } p ? Path.GetFileName(p) : null;
-        return file is not null &&
-            (file.Equals("dotnet", StringComparison.OrdinalIgnoreCase) ||
-             file.Equals("dotnet.exe", StringComparison.OrdinalIgnoreCase));
+        var file = Path.GetFileName(exePath);
+        return file.Equals("dotnet", StringComparison.OrdinalIgnoreCase) ||
+               file.Equals("dotnet.exe", StringComparison.OrdinalIgnoreCase);
     }
 
     async Task<byte[]> DownloadAsync(string url, CancellationToken ct)
