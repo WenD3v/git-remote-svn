@@ -29,4 +29,35 @@ public class UpdateTests
     [Fact]
     public void Current_tem_tres_componentes() =>
         Assert.Matches(@"^\d+\.\d+\.\d+$", VersionUtil.Current);
+
+    [Fact]
+    public void Cache_roundtrip_e_ttl()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "grs-cache-" + Guid.NewGuid().ToString("N") + ".json");
+        try
+        {
+            var cache = new UpdateCache(path);
+            Assert.Null(cache.Read());
+            var agora = DateTimeOffset.UtcNow;
+            cache.Write(new UpdateCacheEntry(agora, "1.0.2", null));
+            var lido = cache.Read();
+            Assert.Equal("1.0.2", lido!.LatestVersion);
+            Assert.True(cache.IsFresh(lido, TimeSpan.FromHours(24)));
+            Assert.False(cache.IsFresh(lido, TimeSpan.Zero));
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public void Cache_invalido_e_lixo_devolve_null()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "grs-cache-" + Guid.NewGuid().ToString("N") + ".json");
+        File.WriteAllText(path, "{ nao e json");
+        try { Assert.Null(new UpdateCache(path).Read()); }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public void DefaultPath_fica_sob_diretorio_do_usuario() =>
+        Assert.Contains("git-remote-svn", UpdateCache.DefaultPath);
 }
