@@ -1,4 +1,5 @@
 using GitRemoteSvn.Update;
+using System.Net;
 using Xunit;
 
 namespace GitRemoteSvn.Tests;
@@ -88,4 +89,87 @@ public class UpdateTests
     [InlineData(null, false)]
     public void AutoUpdate_vem_do_ambiente(string? valor, bool esperado) =>
         Assert.Equal(esperado, UpdateOptions.AutoUpdateRequested(_ => valor));
+
+    const string ReleaseJson = """
+    {"tag_name":"v1.0.2","prerelease":false,"assets":[
+      {"name":"git-remote-svn-v1.0.2-win-x64.zip","browser_download_url":"https://x/win.zip"},
+      {"name":"SHA256SUMS","browser_download_url":"https://x/SHA256SUMS"}]}
+    """;
+
+    static HttpClient Http(Func<HttpRequestMessage, HttpResponseMessage> responder) =>
+        new(new FakeHandler(responder));
+
+    [Fact]
+    public async Task Check_le_tag_e_assets()
+    {
+        var svc = new UpdateService(UpdateOptions.FromEnvironment(_ => null),
+            Http(_ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(ReleaseJson) }),
+            "git-remote-svn.exe");
+        var rel = await svc.CheckAsync();
+        Assert.Equal("1.0.2", rel!.Version);
+        Assert.Equal(2, rel.Assets.Count);
+        Assert.Equal("https://x/win.zip", rel.Assets[0].DownloadUrl);
+    }
+
+    [Fact]
+    public async Task Check_devolve_null_em_rate_limit()
+    {
+        var svc = new UpdateService(UpdateOptions.FromEnvironment(_ => null),
+            Http(_ => new HttpResponseMessage(HttpStatusCode.Forbidden)), "git-remote-svn.exe");
+        Assert.Null(await svc.CheckAsync());
+    }
+
+    [Fact]
+    public async Task Check_devolve_null_para_prerelease()
+    {
+        var json = ReleaseJson.Replace("\"prerelease\":false", "\"prerelease\":true");
+        var svc = new UpdateService(UpdateOptions.FromEnvironment(_ => null),
+            Http(_ => new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json) }),
+            "git-remote-svn.exe");
+        Assert.Null(await svc.CheckAsync());
+    }
+
+    [Fact]
+    public async Task Check_engole_falha_de_rede()
+    {
+        var svc = new UpdateService(UpdateOptions.FromEnvironment(_ => null),
+            Http(_ => throw new HttpRequestException("sem rede")), "git-remote-svn.exe");
+        Assert.Null(await svc.CheckAsync());
+    }
+
+    [Theory]
+    [InlineData("win", "x64", "git-remote-svn-v1.0.2-win-x64.zip")]
+    [InlineData("linux", "x64", "git-remote-svn-v1.0.2-linux-x64.tar.gz")]
+    public void SelectAsset_escolhe_pelo_sufixo(string os, string arch, string esperado)
+    {
+        var assets = new[]
+        {
+            new ReleaseAsset("git-remote-svn-v1.0.2-win-x64.zip", "a"),
+            new ReleaseAsset("git-remote-svn-v1.0.2-linux-x64.tar.gz", "b"),
+            new ReleaseAsset("SHA256SUMS", "c"),
+        };
+        Assert.Equal(esperado, UpdateService.SelectAsset(assets, os, arch)!.Name);
+    }
+
+    [Fact]
+    public void SelectAsset_sem_asset_da_plataforma_devolve_null()
+    {
+        var assets = new[] { new ReleaseAsset("git-remote-svn-v1.0.2-win-x64.zip", "a") };
+        Assert.Null(UpdateService.SelectAsset(assets, "linux", "arm64"));
+    }
+
+    [Fact]
+    public void ParseSums_encontra_a_linha_do_asset()
+    {
+        var text = "abc123  outra.zip\nDEF456  git-remote-svn-v1.0.2-win-x64.zip\n";
+        Assert.Equal("def456", UpdateService.ParseSums(text, "git-remote-svn-v1.0.2-win-x64.zip"));
+        Assert.Null(UpdateService.ParseSums(text, "nao-existe.zip"));
+    }
+}
+
+/// <summary>Respostas HTTP de teste, sem abrir porta nem depender de rede.</summary>
+sealed class FakeHandler(Func<HttpRequestMessage, HttpResponseMessage> responder) : HttpMessageHandler
+{
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) =>
+        Task.FromResult(responder(request));
 }
