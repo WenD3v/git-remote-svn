@@ -60,4 +60,32 @@ public class UpdateTests
     [Fact]
     public void DefaultPath_fica_sob_diretorio_do_usuario() =>
         Assert.Contains("git-remote-svn", UpdateCache.DefaultPath);
+
+    [Fact]
+    public void Options_le_ambiente_e_usa_padroes()
+    {
+        var padrao = UpdateOptions.FromEnvironment(_ => null);
+        Assert.Equal("WenD3v/git-remote-svn", padrao.Repo);
+        Assert.Equal("https://api.github.com", padrao.ApiBase);
+        Assert.False(padrao.Quiet);
+
+        var custom = UpdateOptions.FromEnvironment(k => k switch
+        {
+            "GIT_REMOTE_SVN_UPDATE_REPO" => "eu/outro",
+            "GIT_REMOTE_SVN_UPDATE_API" => "https://espelho/api/",
+            "GIT_REMOTE_SVN_QUIET" => "1",
+            _ => null,
+        });
+        Assert.Equal("eu/outro", custom.Repo);
+        Assert.Equal("https://espelho/api", custom.ApiBase);
+        Assert.True(custom.Quiet);
+    }
+
+    [Theory]
+    [InlineData("1", true)]
+    [InlineData("true", true)]
+    [InlineData("0", false)]
+    [InlineData(null, false)]
+    public void AutoUpdate_vem_do_ambiente(string? valor, bool esperado) =>
+        Assert.Equal(esperado, UpdateOptions.AutoUpdateRequested(_ => valor));
 }
