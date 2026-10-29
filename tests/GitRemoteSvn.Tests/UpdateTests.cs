@@ -1,5 +1,9 @@
 using GitRemoteSvn.Update;
+using System.Formats.Tar;
+using System.IO.Compression;
 using System.Net;
+using System.Security.Cryptography;
+using System.Text;
 using Xunit;
 
 namespace GitRemoteSvn.Tests;
@@ -164,6 +168,174 @@ public class UpdateTests
         var text = "abc123  outra.zip\nDEF456  git-remote-svn-v1.0.2-win-x64.zip\n";
         Assert.Equal("def456", UpdateService.ParseSums(text, "git-remote-svn-v1.0.2-win-x64.zip"));
         Assert.Null(UpdateService.ParseSums(text, "nao-existe.zip"));
+    }
+
+    static byte[] ZipCom(string nomeInterno, string texto)
+    {
+        using var ms = new MemoryStream();
+        using (var zip = new ZipArchive(ms, ZipArchiveMode.Create, true))
+        {
+            using var s = zip.CreateEntry(nomeInterno).Open();
+            s.Write(Encoding.UTF8.GetBytes(texto));
+        }
+        return ms.ToArray();
+    }
+
+    static byte[] TarGzCom(string nomeInterno, string texto)
+    {
+        using var ms = new MemoryStream();
+        using (var gz = new GZipStream(ms, CompressionLevel.NoCompression, true))
+        using (var tar = new TarWriter(gz, TarEntryFormat.Pax, true))
+        {
+            tar.WriteEntry(new PaxTarEntry(TarEntryType.RegularFile, nomeInterno)
+            {
+                DataStream = new MemoryStream(Encoding.UTF8.GetBytes(texto)),
+            });
+        }
+        return ms.ToArray();
+    }
+
+    static string Sha(byte[] conteudo) => Convert.ToHexString(SHA256.HashData(conteudo)).ToLowerInvariant();
+
+    /// <summary>Dir temporario com um executavel "antigo" e um service apontando para ele.</summary>
+    static (string Dir, string Exe, UpdateService Service) Cenario(Dictionary<string, byte[]> respostas,
+        UpdateOptions? options = null)
+    {
+        var dir = Directory.CreateTempSubdirectory("grs-up-").FullName;
+        var exe = Path.Combine(dir, "git-remote-svn.exe");
+        File.WriteAllText(exe, "antigo");
+        var svc = new UpdateService(options ?? UpdateOptions.FromEnvironment(_ => null),
+            Http(req => respostas.TryGetValue(req.RequestUri!.ToString(), out var corpo)
+                ? new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(corpo) }
+                : new HttpResponseMessage(HttpStatusCode.NotFound)),
+            exe);
+        return (dir, exe, svc);
+    }
+
+    [Fact]
+    public async Task Update_recusa_sem_sha256sums()
+    {
+        var (dir, exe, svc) = Cenario(new());
+        var rel = new ReleaseInfo("v9.9.9", "9.9.9",
+            new[] { new ReleaseAsset("git-remote-svn-v9.9.9-win-x64.zip", "https://x/a.zip") });
+        try
+        {
+            var r = await svc.UpdateAsync(rel);
+            Assert.False(r.Updated);
+            Assert.Contains("SHA256SUMS", r.Message);
+            Assert.Equal("antigo", File.ReadAllText(exe));
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
+    public async Task Update_recusa_hash_divergente()
+    {
+        var zip = ZipCom("git-remote-svn.exe", "novo");
+        var (dir, exe, svc) = Cenario(new()
+        {
+            ["https://x/a.zip"] = zip,
+            ["https://x/SHA256SUMS"] = Encoding.UTF8.GetBytes(new string('0', 64) + "  git-remote-svn-v9.9.9-win-x64.zip\n"),
+        });
+        var rel = new ReleaseInfo("v9.9.9", "9.9.9", new[]
+        {
+            new ReleaseAsset("git-remote-svn-v9.9.9-win-x64.zip", "https://x/a.zip"),
+            new ReleaseAsset("SHA256SUMS", "https://x/SHA256SUMS"),
+        });
+        try
+        {
+            var r = await svc.UpdateAsync(rel);
+            Assert.False(r.Updated);
+            Assert.Contains("hash", r.Message);
+            Assert.Equal("antigo", File.ReadAllText(exe));
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
+    public async Task Update_troca_o_executavel_quando_hash_confere()
+    {
+        var zip = ZipCom("git-remote-svn.exe", "novo");
+        var (dir, exe, svc) = Cenario(new()
+        {
+            ["https://x/a.zip"] = zip,
+            ["https://x/SHA256SUMS"] = Encoding.UTF8.GetBytes(Sha(zip) + "  git-remote-svn-v9.9.9-win-x64.zip\n"),
+        });
+        var rel = new ReleaseInfo("v9.9.9", "9.9.9", new[]
+        {
+            new ReleaseAsset("git-remote-svn-v9.9.9-win-x64.zip", "https://x/a.zip"),
+            new ReleaseAsset("SHA256SUMS", "https://x/SHA256SUMS"),
+        });
+        try
+        {
+            var r = await svc.UpdateAsync(rel);
+            Assert.True(r.Updated, r.Message);
+            Assert.Equal("9.9.9", r.Version);
+            Assert.Equal("novo", File.ReadAllText(exe));
+            Assert.Equal("antigo", File.ReadAllText(exe + ".old"));
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
+    public async Task Update_extrai_tar_gz()
+    {
+        var tar = TarGzCom("pasta/git-remote-svn.exe", "novo-tar");
+        var (dir, exe, svc) = Cenario(new()
+        {
+            ["https://x/a.tar.gz"] = tar,
+            ["https://x/SHA256SUMS"] = Encoding.UTF8.GetBytes(Sha(tar) + "  git-remote-svn-v9.9.9-win-x64.tar.gz\n"),
+        });
+        var rel = new ReleaseInfo("v9.9.9", "9.9.9", new[]
+        {
+            new ReleaseAsset("git-remote-svn-v9.9.9-win-x64.tar.gz", "https://x/a.tar.gz"),
+            new ReleaseAsset("SHA256SUMS", "https://x/SHA256SUMS"),
+        });
+        try
+        {
+            var r = await svc.UpdateAsync(rel);
+            Assert.True(r.Updated, r.Message);
+            Assert.Equal("novo-tar", File.ReadAllText(exe));
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
+    public async Task Update_sem_asset_da_plataforma_nao_baixa_nada()
+    {
+        var (dir, exe, svc) = Cenario(new()
+        {
+            ["https://x/SHA256SUMS"] = Encoding.UTF8.GetBytes("x  outra-coisa.zip\n"),
+        });
+        var rel = new ReleaseInfo("v9.9.9", "9.9.9", new[]
+        {
+            new ReleaseAsset("git-remote-svn-v9.9.9-plataforma-inexistente.zip", "https://x/nada.zip"),
+            new ReleaseAsset("SHA256SUMS", "https://x/SHA256SUMS"),
+        });
+        try
+        {
+            var r = await svc.UpdateAsync(rel);
+            Assert.False(r.Updated);
+            Assert.Contains("plataforma", r.Message);
+            Assert.Equal("antigo", File.ReadAllText(exe));
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
+    public void CleanupLeftovers_apaga_old_da_atualizacao_anterior()
+    {
+        var dir = Directory.CreateTempSubdirectory("grs-old-").FullName;
+        var exe = Path.Combine(dir, "git-remote-svn.exe");
+        File.WriteAllText(exe, "novo");
+        File.WriteAllText(exe + ".old", "antigo");
+        try
+        {
+            UpdateService.CleanupLeftovers(exe);
+            Assert.False(File.Exists(exe + ".old"));
+            Assert.Equal("novo", File.ReadAllText(exe));
+        }
+        finally { Directory.Delete(dir, true); }
     }
 }
 

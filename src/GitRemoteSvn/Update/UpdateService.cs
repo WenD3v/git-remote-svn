@@ -1,3 +1,8 @@
+using System.Formats.Tar;
+using System.IO.Compression;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 
 namespace GitRemoteSvn.Update;
@@ -15,12 +20,13 @@ public sealed record UpdateResult(bool Updated, string? Version, string? Message
 /// Consulta o release do GitHub e instala o binario da plataforma. Nenhuma falha de rede pode escapar:
 /// a checagem roda no fim de um fetch/push e so pode, no maximo, deixar de avisar.
 /// </summary>
-public sealed class UpdateService(UpdateOptions options, HttpClient http, string exePath, TextWriter? stderr = null)
+public sealed class UpdateService(UpdateOptions options, HttpClient http, string exePath)
 {
     /// <summary>Nome do asset com os hashes; sem ele nada e instalado.</summary>
     public const string SumsAssetName = "SHA256SUMS";
 
     static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(5);
+    static readonly TimeSpan DownloadTimeout = TimeSpan.FromMinutes(5);
 
     /// <summary>Release mais recente, ou <c>null</c> em rate limit, pre-release, sem release ou falha de rede.</summary>
     public async Task<ReleaseInfo?> CheckAsync(CancellationToken ct = default)
@@ -78,5 +84,182 @@ public sealed class UpdateService(UpdateOptions options, HttpClient http, string
             if (parts.Length >= 2 && parts[^1] == assetName) return parts[0].ToLowerInvariant();
         }
         return null;
+    }
+
+    /// <summary>Baixa, confere o SHA-256 e troca o executavel. Nunca lanca: o motivo vai em <see cref="UpdateResult.Message"/>.</summary>
+    public async Task<UpdateResult> UpdateAsync(ReleaseInfo release, CancellationToken ct = default)
+    {
+        try
+        {
+            if (IsFrameworkLauncher())
+                return new UpdateResult(false, null,
+                    "este helper esta rodando pelo 'dotnet'; instale o binario publicado para usar o update");
+
+            var (os, arch) = Platform();
+            var asset = SelectAsset(release.Assets, os, arch);
+            if (asset is null)
+                return new UpdateResult(false, null,
+                    $"sem atualizacao para esta plataforma ({os}-{arch})");
+
+            var sums = release.Assets.FirstOrDefault(a => a.Name == SumsAssetName);
+            if (sums is null)
+                return new UpdateResult(false, null,
+                    "release sem SHA256SUMS; atualizacao recusada (instale manualmente)");
+
+            var package = await DownloadAsync(asset.DownloadUrl, ct);
+            var expected = ParseSums(Encoding.UTF8.GetString(await DownloadAsync(sums.DownloadUrl, ct)), asset.Name);
+            if (expected is null)
+                return new UpdateResult(false, null, $"SHA256SUMS nao contem {asset.Name}; atualizacao recusada");
+
+            var actual = Convert.ToHexString(SHA256.HashData(package)).ToLowerInvariant();
+            if (actual != expected)
+                return new UpdateResult(false, null, $"hash de {asset.Name} nao confere; atualizacao recusada");
+
+            Install(ExtractExecutable(package, asset.Name));
+            return new UpdateResult(true, release.Version, null);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return new UpdateResult(false, null, ex.Message);
+        }
+    }
+
+    /// <summary>Apaga <c>.old</c>/<c>.new</c> deixados por uma atualizacao anterior (chamado no inicio da execucao).</summary>
+    public static void CleanupLeftovers(string exePath)
+    {
+        foreach (var suffix in new[] { ".old", ".new" })
+        {
+            try
+            {
+                if (File.Exists(exePath + suffix)) File.Delete(exePath + suffix);
+            }
+            catch (Exception)
+            {
+                // arquivo em uso: sai na proxima execucao
+            }
+        }
+    }
+
+    /// <summary>OS e arquitetura no vocabulario dos assets (<c>win-x64</c>, <c>linux-arm64</c>).</summary>
+    static (string Os, string Arch) Platform()
+    {
+        var os = OperatingSystem.IsWindows() ? "win" : OperatingSystem.IsMacOS() ? "osx" : "linux";
+        var arch = RuntimeInformation.ProcessArchitecture switch
+        {
+            Architecture.Arm64 => "arm64",
+            Architecture.X86 => "x86",
+            Architecture.Arm => "arm",
+            _ => "x64",
+        };
+        return (os, arch);
+    }
+
+    static bool IsFrameworkLauncher()
+    {
+        var file = Environment.ProcessPath is { } p ? Path.GetFileName(p) : null;
+        return file is not null &&
+            (file.Equals("dotnet", StringComparison.OrdinalIgnoreCase) ||
+             file.Equals("dotnet.exe", StringComparison.OrdinalIgnoreCase));
+    }
+
+    async Task<byte[]> DownloadAsync(string url, CancellationToken ct)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeout.CancelAfter(DownloadTimeout);
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.UserAgent.ParseAdd($"git-remote-svn/{VersionUtil.Current}");
+        using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadAsByteArrayAsync(timeout.Token);
+    }
+
+    /// <summary>Bytes do executavel dentro do zip/tar.gz, procurando pelo nome instalado ou pelos nomes padrao.</summary>
+    byte[] ExtractExecutable(byte[] package, string assetName)
+    {
+        var accepted = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            Path.GetFileName(exePath), "git-remote-svn", "git-remote-svn.exe",
+        };
+        using var stream = new MemoryStream(package);
+        if (assetName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase))
+        {
+            using var zip = new ZipArchive(stream, ZipArchiveMode.Read);
+            var entry = zip.Entries.FirstOrDefault(e => accepted.Contains(Path.GetFileName(e.FullName)));
+            if (entry is null) throw new InvalidOperationException($"o pacote {assetName} nao contem o executavel");
+            using var source = entry.Open();
+            using var buffer = new MemoryStream();
+            source.CopyTo(buffer);
+            return buffer.ToArray();
+        }
+
+        using var gz = new GZipStream(stream, CompressionMode.Decompress);
+        using var tar = new TarReader(gz);
+        while (tar.GetNextEntry() is { } entry)
+        {
+            if (entry.EntryType is not (TarEntryType.RegularFile or TarEntryType.V7RegularFile)) continue;
+            if (!accepted.Contains(Path.GetFileName(entry.Name))) continue;
+            using var buffer = new MemoryStream();
+            entry.DataStream!.CopyTo(buffer);
+            return buffer.ToArray();
+        }
+        throw new InvalidOperationException($"o pacote {assetName} nao contem o executavel");
+    }
+
+    /// <summary>Troca o arquivo em uso: renomeia o antigo e posiciona o novo no lugar.</summary>
+    void Install(byte[] content)
+    {
+        var dir = Path.GetDirectoryName(exePath);
+        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+
+        var incoming = exePath + ".new";
+        File.WriteAllBytes(incoming, content);
+        try
+        {
+            if (!OperatingSystem.IsWindows())
+            {
+                File.SetUnixFileMode(incoming, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+                    UnixFileMode.GroupRead | UnixFileMode.GroupExecute | UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
+                File.Move(incoming, exePath, true);
+                return;
+            }
+
+            var previous = exePath + ".old";
+            try
+            {
+                if (File.Exists(previous)) File.Delete(previous);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // sem espaco para um backup novo: segue e tenta a troca
+            }
+            try
+            {
+                File.Move(exePath, previous);
+            }
+            catch (FileNotFoundException)
+            {
+                // instalacao nova: nao ha o que preservar
+            }
+            try
+            {
+                File.Move(incoming, exePath, true);
+            }
+            catch
+            {
+                if (!File.Exists(exePath) && File.Exists(previous)) File.Move(previous, exePath);
+                throw;
+            }
+        }
+        finally
+        {
+            try
+            {
+                if (File.Exists(incoming)) File.Delete(incoming);
+            }
+            catch (Exception)
+            {
+                // limpeza melhor esforco
+            }
+        }
     }
 }
