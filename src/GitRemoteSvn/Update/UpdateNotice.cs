@@ -1,5 +1,7 @@
 namespace GitRemoteSvn.Update;
 
+using GitRemoteSvn.Git;
+
 /// <summary>
 /// Checagem que roda ao final de uma sessao do helper: no maximo uma consulta ao GitHub por dia (cache de
 /// 24h), aviso de uma linha no stderr e, quando ligada, a auto-instalacao. Toda falha e silenciosa: o
@@ -45,7 +47,9 @@ public static class UpdateNotice
             {
                 release ??= await svc.CheckAsync(ct);
                 if (release is null) return null;
-                var result = await svc.UpdateAsync(release, ct);
+                // o token da sessao vale para a consulta (2 s); a instalacao baixa dezenas de MB e usa o
+                // proprio limite de download do servico (5 min)
+                var result = await svc.UpdateAsync(release);
                 return result.Updated
                     ? $"git-remote-svn: atualizado para v{release.Version} (novas sessoes usam a versao nova)"
                     : $"git-remote-svn: {result.Message}";
@@ -56,6 +60,24 @@ public static class UpdateNotice
         catch (Exception)
         {
             return null;
+        }
+    }
+
+    /// <summary>
+    /// Auto-instalacao ligada pelo ambiente ou por <c>remote-svn.autoUpdate</c>; <c>git config</c> sem
+    /// <c>--global</c> respeita o valor do repositorio, que tem prioridade sobre o global.
+    /// </summary>
+    public static async Task<bool> AutoUpdateEnabledAsync(GitClient git)
+    {
+        if (UpdateOptions.AutoUpdateRequested()) return true;
+        try
+        {
+            var (code, stdout, _) = await git.RunAllowAsync("config", "--get", "remote-svn.autoUpdate");
+            return code == 0 && stdout.Trim().Equals("true", StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception)
+        {
+            return false;
         }
     }
 }

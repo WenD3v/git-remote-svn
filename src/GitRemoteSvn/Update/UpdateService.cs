@@ -115,10 +115,22 @@ public sealed class UpdateService(UpdateOptions options, HttpClient http, string
             if (actual != expected)
                 return new UpdateResult(false, null, $"hash de {asset.Name} nao confere; atualizacao recusada");
 
-            Install(ExtractExecutable(package, asset.Name));
+            try
+            {
+                Install(ExtractExecutable(package, asset.Name));
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                return new UpdateResult(false, null, $"nao foi possivel gravar {exePath}: {ex.Message}");
+            }
             return new UpdateResult(true, release.Version, null);
         }
-        catch (Exception ex) when (ex is not OperationCanceledException)
+        catch (OperationCanceledException)
+        {
+            // DownloadAsync limita a 5 min; o comando `update` nao pode terminar com stack trace
+            return new UpdateResult(false, null, "download cancelado ou excedeu 5 minutos");
+        }
+        catch (Exception ex)
         {
             return new UpdateResult(false, null, ex.Message);
         }
@@ -211,10 +223,11 @@ public sealed class UpdateService(UpdateOptions options, HttpClient http, string
         var dir = Path.GetDirectoryName(exePath);
         if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
 
-        var incoming = exePath + ".new";
-        File.WriteAllBytes(incoming, content);
+        // temporario unico: duas sessoes em clones diferentes podem instalar ao mesmo tempo
+        var incoming = $"{exePath}.{Environment.ProcessId}.{Guid.NewGuid():N}.new";
         try
         {
+            File.WriteAllBytes(incoming, content);
             if (!OperatingSystem.IsWindows())
             {
                 File.SetUnixFileMode(incoming, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |

@@ -26,6 +26,13 @@ public sealed record UpdateOptions(string Repo, string ApiBase, bool Quiet)
         return IsTrue(getEnv("GIT_REMOTE_SVN_AUTO_UPDATE"));
     }
 
+    /// <summary>Desliga a checagem do fim da sessao (usado pelos testes, que nao devem tocar rede nem cache).</summary>
+    public static bool NoticeDisabled(Func<string, string?>? getEnv = null)
+    {
+        getEnv ??= Environment.GetEnvironmentVariable;
+        return IsTrue(getEnv("GIT_REMOTE_SVN_NO_UPDATE"));
+    }
+
     static bool IsTrue(string? value) =>
         value is not null && (value.Trim() == "1" || value.Trim().Equals("true", StringComparison.OrdinalIgnoreCase));
 }

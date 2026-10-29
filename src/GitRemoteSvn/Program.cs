@@ -115,6 +115,7 @@ static string CachePath() =>
 /// <summary>Checagem diaria no fim da sessao: aviso de uma linha ou auto-instalacao, sempre silenciosa em falha.</summary>
 static async Task MaybeNotifyUpdateAsync(GitClient git)
 {
+    if (UpdateOptions.NoticeDisabled()) return;
     try
     {
         var exe = Environment.ProcessPath;
@@ -122,11 +123,7 @@ static async Task MaybeNotifyUpdateAsync(GitClient git)
         using var http = new HttpClient();
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
         var mensagem = await UpdateNotice.CheckAndApplyAsync(UpdateOptions.FromEnvironment(), http, exe,
-            new UpdateCache(CachePath()), async () =>
-                UpdateOptions.AutoUpdateRequested() ||
-                (await git.RunAllowAsync("config", "--global", "--get", "remote-svn.autoUpdate")).StdOut
-                    .Trim().Equals("true", StringComparison.OrdinalIgnoreCase),
-            timeout.Token);
+            new UpdateCache(CachePath()), () => UpdateNotice.AutoUpdateEnabledAsync(git), timeout.Token);
         if (mensagem is not null) await Console.Error.WriteLineAsync(mensagem);
     }
     catch (Exception)

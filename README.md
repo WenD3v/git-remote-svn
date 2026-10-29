@@ -55,7 +55,8 @@ git-remote-svn update          # download, verify SHA256SUMS and replace this ex
 The helper also checks once a day in the background (cached, 2 s timeout) and prints a single line when a newer
 version exists, for example `git-remote-svn: nova versao v1.0.3 disponivel (git-remote-svn update)`. To install it
 automatically at the end of a session, run `git config --global remote-svn.autoUpdate true` (or set
-`GIT_REMOTE_SVN_AUTO_UPDATE=1`); `--quiet` / `GIT_REMOTE_SVN_QUIET=1` silence the notice. On Windows the running
+`GIT_REMOTE_SVN_AUTO_UPDATE=1`); `--quiet` / `GIT_REMOTE_SVN_QUIET=1` silence the notice, and
+`GIT_REMOTE_SVN_NO_UPDATE=1` turns the end-of-session check off entirely. On Windows the running
 binary is renamed and replaced, so the current session keeps the old version and the next one starts on the new.
 Releases before v1.0.2 have no `SHA256SUMS` and are refused by `update` — install those by hand.
 
