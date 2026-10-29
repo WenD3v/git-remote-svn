@@ -17,6 +17,21 @@ helper funciona, só que mais devagar (um `svn cat` por arquivo alterado).
 Pelo release: baixe o pacote da sua plataforma em [Releases](https://github.com/WenD3v/git-remote-svn/releases),
 extraia e coloque `git-remote-svn` (`git-remote-svn.exe` no Windows) numa pasta do `PATH`.
 
+Atualizando pelo próprio helper (a partir da 1.0.2):
+
+```bash
+git-remote-svn --version       # git-remote-svn 1.0.2 (win-x64)
+git-remote-svn update --check  # existe versão mais nova?
+git-remote-svn update          # baixa, confere o SHA256SUMS e troca este executável
+```
+
+Ele também confere uma vez por dia em segundo plano (com cache e timeout de 2 s) e imprime uma linha quando há
+versão nova, por exemplo `git-remote-svn: nova versao v1.0.3 disponivel (git-remote-svn update)`. Para instalar
+sozinho no fim da sessão, rode `git config --global remote-svn.autoUpdate true` (ou defina
+`GIT_REMOTE_SVN_AUTO_UPDATE=1`); `--quiet` / `GIT_REMOTE_SVN_QUIET=1` silenciam o aviso. No Windows o binário em
+uso é renomeado e substituído: a sessão atual continua na versão antiga e a próxima já começa na nova. Releases
+anteriores à 1.0.2 não têm `SHA256SUMS` e o `update` se recusa a usá-las — instale essas à mão.
+
 Pelo código-fonte (.NET 9 SDK):
 
 ```powershell

@@ -56,4 +56,7 @@ jobs:
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" git-remote-svn-* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
+        run: |
+          sha256sum git-remote-svn-* > SHA256SUMS
+          cat SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" git-remote-svn-* SHA256SUMS --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes

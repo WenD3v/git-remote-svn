@@ -478,10 +478,19 @@ public class UpdateTests
     [Fact]
     public async Task Update_check_sem_rede_nao_falha()
     {
-        var (code, stdout, stderr) = await RunHelperAsync(
-            new() { ["GIT_REMOTE_SVN_UPDATE_API"] = "http://127.0.0.1:9" }, "update", "--check");
-        Assert.Equal(0, code);
-        Assert.Contains("nao foi possivel", stderr + stdout);
+        // cache proprio: a resposta negativa fica gravada, e um segundo uso nao pode responder pelo cache do usuario
+        var cachePath = Path.Combine(Path.GetTempPath(), "grs-cli-cache-" + Guid.NewGuid().ToString("N") + ".json");
+        try
+        {
+            var (code, stdout, stderr) = await RunHelperAsync(new()
+            {
+                ["GIT_REMOTE_SVN_UPDATE_API"] = "http://127.0.0.1:9",
+                ["GIT_REMOTE_SVN_UPDATE_CACHE"] = cachePath,
+            }, "update", "--check");
+            Assert.Equal(0, code);
+            Assert.Contains("nao foi possivel", stderr + stdout);
+        }
+        finally { File.Delete(cachePath); }
     }
 
     [Fact]

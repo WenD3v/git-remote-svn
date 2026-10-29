@@ -44,6 +44,21 @@ git clone/fetch/push svn::URL
 | `Sync/SvnId.cs` | The `svn-id: <url>@<rev> <uuid>` trailer: the single source of truth for "this commit is that revision". |
 | `Git/GitClient.cs`, `Git/FastImportWriter.cs` | Git CLI wrapper and `git fast-import` stream writer. |
 | `Util/Proc.cs` | Process runner; honors `GIT_REMOTE_SVN_TRACE`. |
+| `Update/UpdateService.cs` | Finds the latest GitHub release, selects the asset for the platform, verifies `SHA256SUMS` and swaps the installed executable. |
+| `Update/UpdateNotice.cs`, `Update/UpdateCache.cs` | End-of-session check with a 24 h cache (`%LOCALAPPDATA%\git-remote-svn\update.json`, `~/.cache` elsewhere); notices a new version or installs it when auto-update is on. |
+| `Update/VersionUtil.cs`, `Update/UpdateOptions.cs` | Version parsing/comparison and the environment switches (`GIT_REMOTE_SVN_UPDATE_REPO`, `..._API`, `..._QUIET`, `..._AUTO_UPDATE`, `..._UPDATE_CACHE`). |
+
+## Updates
+
+The helper ships as a self-contained executable per platform, published by the `Release` workflow on every
+`v*` tag together with a `SHA256SUMS` file. `git-remote-svn --version` prints the running version;
+`git-remote-svn update [--check] [--force]` queries `https://api.github.com/repos/WenD3v/git-remote-svn/releases/latest`,
+downloads the asset for the current OS/architecture, refuses to install when the checksum is missing or wrong,
+and replaces the running file (on Windows the old binary is renamed to `.old` and removed on the next run, so the
+session that triggered the update keeps using the version it started with). At the end of every helper session the
+same check runs against the 24 h cache and prints one warning line when a newer version exists; setting
+`remote-svn.autoUpdate=true` (or `GIT_REMOTE_SVN_AUTO_UPDATE=1`) makes it install instead. Source checkouts
+(`dotnet run`, framework-dependent publish) are never updated by the helper.
 
 ## Refs and state
 
