@@ -8,7 +8,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <InvariantGlobalization>true</InvariantGlobalization>
-    <Version>1.0.0</Version>
+    <Version>1.0.1</Version>
     <Product>git-remote-svn</Product>
     <Description>Git remote helper that uses a Subversion repository as origin.</Description>
     <Authors>Wendel Marques</Authors>
