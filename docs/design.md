@@ -39,8 +39,8 @@ git clone/fetch/push svn::URL
 | `Sync/RevisionImporter.cs` | Imports trunk, branches and tags into private refs. Chooses between the dump path and the per-revision fallback. |
 | `Sync/DumpApplier.cs` | Rebuilds each revision's tree from dump records (deltas, copies, EOL translation, `svn:ignore`). |
 | `Sync/Pusher.cs` | Turns local commits into SVN revisions and rewrites the local branch onto mirror commits. |
-| `Sync/SvnWorkingCopy.cs` | Per-branch scratch working copy in `.git/svn/wc/`. |
-| `Sync/StateStore.cs` | `.git/svn/state.json`: layout, last imported revision per ref, revisions created by in-flight pushes. |
+| `Sync/SvnWorkingCopy.cs` | Per-branch shallow scratch working copy in `.git/svn/wc/`; fetches only the paths a commit touches. |
+| `Sync/StateStore.cs` | `.git/svn/state.json`: layout, last imported revision per ref, revisions created by in-flight pushes, repository HEAD at the last import. |
 | `Sync/SvnId.cs` | The `svn-id: <url>@<rev> <uuid>` trailer: the single source of truth for "this commit is that revision". |
 | `Git/GitClient.cs`, `Git/FastImportWriter.cs` | Git CLI wrapper and `git fast-import` stream writer. |
 | `Util/Proc.cs` | Process runner; honors `GIT_REMOTE_SVN_TRACE`. |
@@ -75,6 +75,9 @@ git clone/fetch/push svn::URL
    inside `tags/T`, fetch warns and does not move the tag.
 6. `svn:ignore` values become patterns in `.git/info/exclude` (local, never committed).
 7. Fetch never touches local branches or the working tree.
+8. Every session starts with one `svn info` on the project root: if the repository HEAD and UUID match the
+   ones recorded in `state.json` at the last complete import, nothing changed and the per-branch checks are
+   skipped. A fetch with no news costs about one `svn info` instead of a dozen calls.
 
 ## Push
 
@@ -90,6 +93,12 @@ For a branch that already exists in SVN (`Pusher.PushBranchAsync`):
    `diff-tree --no-renames` changes, `svn commit` with the original message, verify that nobody committed in
    between, then create a mirror commit (`commit-tree`: same tree, author, committer and parents, plus the
    `svn-id` trailer). A merge also sets `svn:mergeinfo`. An empty commit creates no revision.
+
+   The scratch copy is a shallow checkout (`--depth empty`): only the directories and files the commit
+   touches are fetched, by a recursive `svn list` plus `svn update` of those paths. A file the copy already
+   holds from an earlier push has its base revision refreshed first, otherwise committing over somebody
+   else's change would fail as "out of date" even with the Git side already pulled. A full checkout of a
+   large tree cost 10-18 s per push; the shallow copy costs about the same as one `svn list`.
 4. Only at the end: advance the private ref and the state, and move the local branch onto the mirror commits
    with a compare-and-swap `update-ref`.
 

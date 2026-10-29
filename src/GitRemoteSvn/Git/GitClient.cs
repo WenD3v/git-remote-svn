@@ -35,7 +35,25 @@ public class GitClient(string repoPath, string gitExe = "git")
     public Task<(int Code, string StdOut, string StdErr)> RunAllowAsync(params string[] args) =>
         Proc.RunAsync(GitExe, RepoPath, args);
 
-    public Task ConfigSetAsync(string key, string value) => RunAsync("config", key, value);
+    readonly Dictionary<string, string?> _config = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Grava a configuracao local, sem derrubar a sessao: um <c>.git/config</c> somente leitura (ou travado por
+    /// outro processo) nao pode abortar um fetch/push inteiro por causa de um ajuste de conveniencia.
+    /// </summary>
+    public async Task ConfigSetAsync(string key, string value)
+    {
+        if (_config.TryGetValue(key, out var cached) && cached == value) return;
+        var (getCode, stdout, _) = await RunAllowAsync("config", "--local", "--get", key);
+        if (getCode == 0 && stdout.Trim() == value) { _config[key] = value; return; }
+        var (code, _, stderr) = await RunAllowAsync("config", "--local", key, value);
+        if (code != 0)
+        {
+            Console.Error.WriteLine($"git-remote-svn: aviso: nao foi possivel configurar {key}: {stderr.Trim()}");
+            return;
+        }
+        _config[key] = value;
+    }
 
     public async Task<string?> ConfigGetAsync(string key)
     {

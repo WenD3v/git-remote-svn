@@ -141,6 +141,17 @@ public class RemoteHelper(SvnClient svn, AuthorMap authors, GitClient git, strin
         if (_imported) return;
         var state = new StateStore(git.GitDir);
         var layout = _layout = state.LoadLayout() ?? await ProjectLayout.DiscoverAsync(svn, url);
+        await LoadRefsAsync();
+        // nada mudou no repositorio desde a ultima importacao completa: as refs locais ja estao em dia e
+        // consultar branch por branch so custaria uma dezena de processos por sessao
+        var head = await svn.InfoAsync(layout.RootUrl);
+        if (state.GetImportedHead() is { } done && done.Uuid == head.Uuid && done.Revision == head.Revision &&
+            _refs.ContainsKey("refs/heads/main"))
+        {
+            _imported = true;
+            return;
+        }
+
         var importer = new RevisionImporter(svn, git, state, authors);
         var target = PrivateRef("main");
         await importer.ImportTrunkAsync(layout, target);
@@ -150,8 +161,16 @@ public class RemoteHelper(SvnClient svn, AuthorMap authors, GitClient git, strin
         // branch apagada no SVN tambem some de refs/remotes no proximo fetch
         await git.ConfigSetAsync($"remote.{remote}.prune", "true");
         await importer.ImportBranchesAndTagsAsync(layout, $"refs/svn/{remote}");
+        state.SetImportedHead(head.Uuid, head.Revision);
+        await LoadRefsAsync();
+        _imported = true;
+    }
 
+    /// <summary>Refs privadas ja existentes no repositorio, como anunciadas no protocolo.</summary>
+    async Task LoadRefsAsync()
+    {
         var prefix = $"refs/svn/{remote}/";
+        _refs.Clear();
         var refs = await git.RunAsync("for-each-ref", "--format=%(objectname) %(refname)", prefix);
         foreach (var l in refs.Split('\n', StringSplitOptions.RemoveEmptyEntries))
         {
@@ -159,7 +178,6 @@ public class RemoteHelper(SvnClient svn, AuthorMap authors, GitClient git, strin
             var rest = name.Substring(prefix.Length);
             if (rest.StartsWith("heads/") || rest.StartsWith("tags/")) _refs["refs/" + rest] = sha;
         }
-        _imported = true;
     }
 
     static async Task WriteAsync(TextWriter output, params string[] lines)

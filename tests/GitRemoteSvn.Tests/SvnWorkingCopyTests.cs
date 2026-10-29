@@ -19,7 +19,7 @@ public class SvnWorkingCopyTests : IDisposable
     }
 
     [Fact]
-    public async Task Ensure_faz_checkout_e_update()
+    public async Task Ensure_faz_checkout_raso_e_reaproveita_a_wc()
     {
         await using var repo = await SvnTestRepo.CreateAsync();
         var r2 = await repo.CommitFileAsync("a.txt", "1"u8.ToArray(), "primeiro");
@@ -27,11 +27,27 @@ public class SvnWorkingCopyTests : IDisposable
         var wc = new SvnWorkingCopy(new SvnClient(), NewDir());
 
         var path = await wc.EnsureAsync(repo.RepoUrl + "/trunk", r2);
-        Assert.Equal("1", await File.ReadAllTextAsync(Path.Combine(path, "a.txt")));
+        // o checkout nao baixa a arvore: o conteudo entra so no que o push vai alterar
+        Assert.False(File.Exists(Path.Combine(path, "a.txt")));
 
         var path2 = await wc.EnsureAsync(repo.RepoUrl + "/trunk", r3);
         Assert.Equal(path, path2);
+    }
+
+    [Fact]
+    public async Task ApplyTree_baixa_so_os_arquivos_alterados()
+    {
+        await using var repo = await SvnTestRepo.CreateAsync();
+        await repo.CommitFileAsync("a.txt", "1"u8.ToArray(), "a");
+        var head = await repo.CommitFileAsync("intocado.txt", "x"u8.ToArray(), "x");
+        var wc = new SvnWorkingCopy(new SvnClient(), NewDir());
+        var path = await wc.EnsureAsync(repo.RepoUrl + "/trunk", head);
+
+        await wc.ApplyTreeAsync(path, repo.RepoUrl + "/trunk", head,
+            new[] { new ImportFile("a.txt", "2"u8.ToArray()) });
+
         Assert.Equal("2", await File.ReadAllTextAsync(Path.Combine(path, "a.txt")));
+        Assert.False(File.Exists(Path.Combine(path, "intocado.txt")));
     }
 
     [Fact]
@@ -43,7 +59,7 @@ public class SvnWorkingCopyTests : IDisposable
         var wc = new SvnWorkingCopy(new SvnClient(), NewDir());
         var path = await wc.EnsureAsync(repo.RepoUrl + "/trunk", head);
 
-        await wc.ApplyTreeAsync(path, new[]
+        await wc.ApplyTreeAsync(path, repo.RepoUrl + "/trunk", head, new[]
         {
             new ImportFile("a.txt", "mudou"u8.ToArray()),
             new ImportFile("old/b.txt", null),
@@ -64,13 +80,58 @@ public class SvnWorkingCopyTests : IDisposable
     }
 
     [Fact]
+    public async Task Apagar_pasta_inteira_sai_numa_unica_revisao()
+    {
+        await using var repo = await SvnTestRepo.CreateAsync();
+        await repo.CommitFileAsync("old/1.txt", "1"u8.ToArray(), "1");
+        var head = await repo.CommitFileAsync("old/2.txt", "2"u8.ToArray(), "2");
+        var wc = new SvnWorkingCopy(new SvnClient(), NewDir());
+        var path = await wc.EnsureAsync(repo.RepoUrl + "/trunk", head);
+
+        await wc.ApplyTreeAsync(path, repo.RepoUrl + "/trunk", head, new[]
+        {
+            new ImportFile("old/1.txt", null),
+            new ImportFile("old/2.txt", null),
+            new ImportFile("novo.txt", "n"u8.ToArray()),
+        });
+        var rev = await wc.CommitAsync(path, "apaga pasta antiga");
+
+        Assert.Equal(head + 1, rev);
+        var xml = System.Xml.Linq.XDocument.Parse(await repo.SvnAsync("list", "-R", "--xml", repo.RepoUrl + "/trunk"));
+        var list = xml.Descendants("entry").Select(e => e.Element("name")!.Value).OrderBy(x => x, StringComparer.Ordinal);
+        Assert.Equal(new[] { "novo.txt" }, list);
+    }
+
+    [Fact]
+    public async Task ApplyTree_atualiza_base_de_arquivo_que_mudou_no_svn()
+    {
+        await using var repo = await SvnTestRepo.CreateAsync();
+        var head = await repo.CommitFileAsync("a.txt", "1"u8.ToArray(), "a");
+        var wc = new SvnWorkingCopy(new SvnClient(), NewDir());
+        var path = await wc.EnsureAsync(repo.RepoUrl + "/trunk", head);
+        await wc.ApplyTreeAsync(path, repo.RepoUrl + "/trunk", head,
+            new[] { new ImportFile("a.txt", "2"u8.ToArray()) });
+        await wc.CommitAsync(path, "muda a");
+
+        // outra pessoa muda o mesmo arquivo: a WC rasa continua com a base antiga do ultimo push
+        var externo = await repo.CommitFileToAsync("trunk", "a.txt", "3"u8.ToArray(), "outro muda a");
+        await wc.ApplyTreeAsync(path, repo.RepoUrl + "/trunk", externo,
+            new[] { new ImportFile("a.txt", "4"u8.ToArray()) });
+        var rev = await wc.CommitAsync(path, "muda a de novo");
+
+        Assert.Equal(externo + 1, rev);
+        Assert.Equal("4", await repo.CatAsync(repo.RepoUrl + "/trunk/a.txt"));
+    }
+
+    [Fact]
     public async Task Commit_retorna_numero_da_revisao()
     {
         await using var repo = await SvnTestRepo.CreateAsync();
         var head = await repo.CommitFileAsync("a.txt", "1"u8.ToArray(), "a");
         var wc = new SvnWorkingCopy(new SvnClient(), NewDir());
         var path = await wc.EnsureAsync(repo.RepoUrl + "/trunk", head);
-        await wc.ApplyTreeAsync(path, new[] { new ImportFile("a.txt", "2"u8.ToArray()) });
+        await wc.ApplyTreeAsync(path, repo.RepoUrl + "/trunk", head,
+            new[] { new ImportFile("a.txt", "2"u8.ToArray()) });
 
         var rev = await wc.CommitAsync(path, "muda a");
 
@@ -99,7 +160,8 @@ public class SvnWorkingCopyTests : IDisposable
         var head = await repo.CommitFileAsync("a.txt", "1"u8.ToArray(), "a");
         var wc = new SvnWorkingCopy(new SvnClient(), NewDir());
         var path = await wc.EnsureAsync(repo.RepoUrl + "/trunk", head);
-        await wc.ApplyTreeAsync(path, new[] { new ImportFile("a.txt", "2"u8.ToArray()), new ImportFile("n.txt", "n"u8.ToArray()) });
+        await wc.ApplyTreeAsync(path, repo.RepoUrl + "/trunk", head,
+            new[] { new ImportFile("a.txt", "2"u8.ToArray()), new ImportFile("n.txt", "n"u8.ToArray()) });
         await File.WriteAllTextAsync(Path.Combine(path, "solto.txt"), "x");
 
         await wc.RevertAsync(path);
