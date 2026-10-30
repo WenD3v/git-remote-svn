@@ -132,6 +132,32 @@ public class SvnWorkingCopyTests : IDisposable
     }
 
     [Fact]
+    public async Task Renomear_todos_os_arquivos_da_pasta_no_mesmo_commit()
+    {
+        await using var repo = await SvnTestRepo.CreateAsync();
+        await repo.CommitFileAsync("dir/x.txt", "x"u8.ToArray(), "x");
+        var head = await repo.CommitFileAsync("fora.txt", "f"u8.ToArray(), "f");
+        var wc = new SvnWorkingCopy(new SvnClient(), NewDir());
+        var path = await wc.EnsureAsync(repo.RepoUrl + "/trunk", head);
+
+        // renomeacao sem deteccao de rename (o push usa --no-renames): sai x, entra y na mesma pasta
+        await wc.ApplyTreeAsync(path, repo.RepoUrl + "/trunk", head, new[]
+        {
+            new ImportFile("dir/x.txt", null),
+            new ImportFile("dir/y.txt", "y"u8.ToArray()),
+        });
+        var rev = await wc.CommitAsync(path, "renomeia x para y");
+
+        Assert.Equal(head + 1, rev);
+        var xml = System.Xml.Linq.XDocument.Parse(await repo.SvnAsync("list", "-R", "--xml", repo.RepoUrl + "/trunk"));
+        var list = xml.Descendants("entry")
+            .Select(e => e.Element("name")!.Value + ((string?)e.Attribute("kind") == "dir" ? "/" : ""))
+            .OrderBy(x => x, StringComparer.Ordinal);
+        Assert.Equal(new[] { "dir/", "dir/y.txt", "fora.txt" }, list);
+        Assert.Equal("y", await repo.CatAsync(repo.RepoUrl + "/trunk/dir/y.txt"));
+    }
+
+    [Fact]
     public async Task ApplyTree_atualiza_base_de_arquivo_que_mudou_no_svn()
     {
         await using var repo = await SvnTestRepo.CreateAsync();
