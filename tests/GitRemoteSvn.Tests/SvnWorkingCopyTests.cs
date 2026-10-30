@@ -103,6 +103,35 @@ public class SvnWorkingCopyTests : IDisposable
     }
 
     [Fact]
+    public async Task Apagar_pasta_inteira_preserva_arquivos_novos_do_mesmo_commit()
+    {
+        await using var repo = await SvnTestRepo.CreateAsync();
+        await repo.CommitFileAsync("src/styles/a.css", "a"u8.ToArray(), "a");
+        await repo.CommitFileAsync("src/styles/b.css", "b"u8.ToArray(), "b");
+        var head = await repo.CommitFileAsync("src/outro.txt", "o"u8.ToArray(), "o");
+        var wc = new SvnWorkingCopy(new SvnClient(), NewDir());
+        var path = await wc.EnsureAsync(repo.RepoUrl + "/trunk", head);
+
+        // reestruturacao: a pasta perde todos os arquivos versionados e ganha arquivos novos no mesmo commit
+        await wc.ApplyTreeAsync(path, repo.RepoUrl + "/trunk", head, new[]
+        {
+            new ImportFile("src/styles/a.css", null),
+            new ImportFile("src/styles/b.css", null),
+            new ImportFile("src/styles/new.css", "n"u8.ToArray()),
+            new ImportFile("src/styles/themes/x.css", "x"u8.ToArray()),
+        });
+        var rev = await wc.CommitAsync(path, "reestrutura estilos");
+
+        Assert.Equal(head + 1, rev);
+        var xml = System.Xml.Linq.XDocument.Parse(await repo.SvnAsync("list", "-R", "--xml", repo.RepoUrl + "/trunk"));
+        var list = xml.Descendants("entry")
+            .Select(e => e.Element("name")!.Value + ((string?)e.Attribute("kind") == "dir" ? "/" : ""))
+            .OrderBy(x => x, StringComparer.Ordinal);
+        Assert.Equal(new[] { "src/", "src/outro.txt", "src/styles/", "src/styles/new.css", "src/styles/themes/", "src/styles/themes/x.css" }, list);
+        Assert.Equal("n", await repo.CatAsync(repo.RepoUrl + "/trunk/src/styles/new.css"));
+    }
+
+    [Fact]
     public async Task ApplyTree_atualiza_base_de_arquivo_que_mudou_no_svn()
     {
         await using var repo = await SvnTestRepo.CreateAsync();
