@@ -58,8 +58,9 @@ public class SvnWorkingCopy(SvnClient svn, string rootDir)
         repoFiles ??= new HashSet<string>(
             await svn.ListFilesAsync(At(branchUrl, rev)), StringComparer.Ordinal);
         var deleted = changes.Where(c => c.Content is null).Select(c => c.Path).ToHashSet(StringComparer.Ordinal);
+        var added = changes.Where(c => c.Content is not null).Select(c => c.Path).ToList();
         // pastas que perdem todos os arquivos saem numa unica revisao (um svn delete por pasta, nao por arquivo)
-        var wholeDirs = WholeDeletedDirs(repoFiles, deleted);
+        var wholeDirs = WholeDeletedDirs(repoFiles, deleted, added);
         var inWholeDir = (string p) => wholeDirs.Any(d => p.StartsWith(d + "/", StringComparison.Ordinal));
 
         await FetchAsync(wcPath, branchUrl, rev, changes, repoFiles, wholeDirs, inWholeDir);
@@ -250,7 +251,7 @@ public class SvnWorkingCopy(SvnClient svn, string rootDir)
     }
 
     /// <summary>Pastas (relativas com '/') que perdem todos os arquivos versionados nas alteracoes.</summary>
-    static List<string> WholeDeletedDirs(IReadOnlySet<string> repoFiles, HashSet<string> deleted)
+    static List<string> WholeDeletedDirs(IReadOnlySet<string> repoFiles, HashSet<string> deleted, IReadOnlyList<string> added)
     {
         var result = new List<string>();
         if (deleted.Count == 0) return result;
@@ -261,7 +262,10 @@ public class SvnWorkingCopy(SvnClient svn, string rootDir)
         foreach (var dir in candidates.OrderBy(d => d.Length))
         {
             if (result.Any(w => dir.StartsWith(w + "/", StringComparison.Ordinal))) continue;
+            // arquivo novo na mesma pasta: "svn delete --force" some com o diretorio no disco, inclusive o que
+            // acabou de ser escrito (nao versionado), e o "svn add" seguinte falha com E200009
             var prefix = dir + "/";
+            if (added.Any(p => p.StartsWith(prefix, StringComparison.Ordinal))) continue;
             var under = repoFiles.Where(p => p.StartsWith(prefix, StringComparison.Ordinal)).ToList();
             if (under.Count == 0 || !under.All(deleted.Contains)) continue;
             result.Add(dir);
