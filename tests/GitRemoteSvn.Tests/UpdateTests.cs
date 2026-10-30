@@ -222,8 +222,9 @@ public class UpdateTests
     public async Task Update_recusa_sem_sha256sums()
     {
         var (dir, exe, svc) = Cenario(new());
+        // o asset precisa ser o da plataforma em que o teste roda, senao a recusa vem antes do SHA256SUMS
         var rel = new ReleaseInfo("v9.9.9", "9.9.9",
-            new[] { new ReleaseAsset("git-remote-svn-v9.9.9-win-x64.zip", "https://x/a.zip") });
+            new[] { new ReleaseAsset(AssetDaPlataforma("9.9.9"), "https://x/a.zip") });
         try
         {
             var r = await svc.UpdateAsync(rel);
@@ -237,15 +238,16 @@ public class UpdateTests
     [Fact]
     public async Task Update_recusa_hash_divergente()
     {
-        var zip = ZipCom("git-remote-svn.exe", "novo");
+        var nome = AssetDaPlataforma("9.9.9");
+        var pacote = PacoteDaPlataforma("novo");
         var (dir, exe, svc) = Cenario(new()
         {
-            ["https://x/a.zip"] = zip,
-            ["https://x/SHA256SUMS"] = Encoding.UTF8.GetBytes(new string('0', 64) + "  git-remote-svn-v9.9.9-win-x64.zip\n"),
+            ["https://x/a.zip"] = pacote,
+            ["https://x/SHA256SUMS"] = Encoding.UTF8.GetBytes(new string('0', 64) + $"  {nome}\n"),
         });
         var rel = new ReleaseInfo("v9.9.9", "9.9.9", new[]
         {
-            new ReleaseAsset("git-remote-svn-v9.9.9-win-x64.zip", "https://x/a.zip"),
+            new ReleaseAsset(nome, "https://x/a.zip"),
             new ReleaseAsset("SHA256SUMS", "https://x/SHA256SUMS"),
         });
         try
@@ -261,15 +263,16 @@ public class UpdateTests
     [Fact]
     public async Task Update_troca_o_executavel_quando_hash_confere()
     {
-        var zip = ZipCom("git-remote-svn.exe", "novo");
+        var nome = AssetDaPlataforma("9.9.9");
+        var pacote = PacoteDaPlataforma("novo");
         var (dir, exe, svc) = Cenario(new()
         {
-            ["https://x/a.zip"] = zip,
-            ["https://x/SHA256SUMS"] = Encoding.UTF8.GetBytes(Sha(zip) + "  git-remote-svn-v9.9.9-win-x64.zip\n"),
+            ["https://x/a.zip"] = pacote,
+            ["https://x/SHA256SUMS"] = Encoding.UTF8.GetBytes(Sha(pacote) + $"  {nome}\n"),
         });
         var rel = new ReleaseInfo("v9.9.9", "9.9.9", new[]
         {
-            new ReleaseAsset("git-remote-svn-v9.9.9-win-x64.zip", "https://x/a.zip"),
+            new ReleaseAsset(nome, "https://x/a.zip"),
             new ReleaseAsset("SHA256SUMS", "https://x/SHA256SUMS"),
         });
         try
@@ -278,7 +281,8 @@ public class UpdateTests
             Assert.True(r.Updated, r.Message);
             Assert.Equal("9.9.9", r.Version);
             Assert.Equal("novo", File.ReadAllText(exe));
-            Assert.Equal("antigo", File.ReadAllText(exe + ".old"));
+            // so o Windows precisa guardar o binario anterior: no Unix o arquivo em uso pode ser substituido
+            if (OperatingSystem.IsWindows()) Assert.Equal("antigo", File.ReadAllText(exe + ".old"));
             Assert.Empty(Directory.GetFiles(dir, "*.new"));
         }
         finally { Directory.Delete(dir, true); }
@@ -287,15 +291,16 @@ public class UpdateTests
     [Fact]
     public async Task Update_extrai_tar_gz()
     {
+        var nome = $"git-remote-svn-v9.9.9-{OsArch()}.tar.gz";
         var tar = TarGzCom("pasta/git-remote-svn.exe", "novo-tar");
         var (dir, exe, svc) = Cenario(new()
         {
             ["https://x/a.tar.gz"] = tar,
-            ["https://x/SHA256SUMS"] = Encoding.UTF8.GetBytes(Sha(tar) + "  git-remote-svn-v9.9.9-win-x64.tar.gz\n"),
+            ["https://x/SHA256SUMS"] = Encoding.UTF8.GetBytes(Sha(tar) + $"  {nome}\n"),
         });
         var rel = new ReleaseInfo("v9.9.9", "9.9.9", new[]
         {
-            new ReleaseAsset("git-remote-svn-v9.9.9-win-x64.tar.gz", "https://x/a.tar.gz"),
+            new ReleaseAsset(nome, "https://x/a.tar.gz"),
             new ReleaseAsset("SHA256SUMS", "https://x/SHA256SUMS"),
         });
         try
@@ -359,10 +364,12 @@ public class UpdateTests
         Assert.Contains("desenvolvimento", r.Message);
     }
 
+    static string OsArch() =>
+        $"{(OperatingSystem.IsWindows() ? "win" : OperatingSystem.IsMacOS() ? "osx" : "linux")}-" +
+        $"{(RuntimeInformation.ProcessArchitecture == Architecture.X64 ? "x64" : "arm64")}";
+
     static string AssetDaPlataforma(string versao) =>
-        $"git-remote-svn-v{versao}-{(OperatingSystem.IsWindows() ? "win" : OperatingSystem.IsMacOS() ? "osx" : "linux")}-" +
-        $"{(RuntimeInformation.ProcessArchitecture == Architecture.X64 ? "x64" : "arm64")}" +
-        (OperatingSystem.IsWindows() ? ".zip" : ".tar.gz");
+        $"git-remote-svn-v{versao}-{OsArch()}" + (OperatingSystem.IsWindows() ? ".zip" : ".tar.gz");
 
     static byte[] PacoteDaPlataforma(string texto) =>
         OperatingSystem.IsWindows() ? ZipCom("git-remote-svn.exe", texto) : TarGzCom("git-remote-svn", texto);
