@@ -30,7 +30,12 @@ public static class HelperBinary
     }
 
     /// <summary>Roda git com o helper publicado na frente do PATH.</summary>
-    public static async Task<(int Code, string StdOut, string StdErr)> GitAsync(string cwd, params string[] args)
+    /// <param name="env">Variaveis extras; a checagem de atualizacao fica desligada por padrao.</param>
+    public static async Task<(int Code, string StdOut, string StdErr)> GitAsync(string cwd, params string[] args) =>
+        await GitWithEnvAsync(cwd, null, args);
+
+    public static async Task<(int Code, string StdOut, string StdErr)> GitWithEnvAsync(string cwd,
+        IReadOnlyDictionary<string, string?>? env, params string[] args)
     {
         var dir = await GetDirAsync();
         var psi = new System.Diagnostics.ProcessStartInfo("git")
@@ -44,6 +49,10 @@ public static class HelperBinary
         };
         foreach (var a in args) psi.ArgumentList.Add(a);
         psi.Environment["PATH"] = dir + Path.PathSeparator + Environment.GetEnvironmentVariable("PATH");
+        // os testes nunca consultam o GitHub nem escrevem no cache real do desenvolvedor
+        psi.Environment["GIT_REMOTE_SVN_NO_UPDATE"] = "1";
+        if (env is not null)
+            foreach (var (k, v) in env) psi.Environment[k] = v;
         using var p = System.Diagnostics.Process.Start(psi)!;
         var stdout = p.StandardOutput.ReadToEndAsync();
         var stderr = p.StandardError.ReadToEndAsync();
